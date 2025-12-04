@@ -95,7 +95,7 @@ static void gpio_button_task(void *args)
 
         while (1) {
                 if (xQueueReceive(gpio_button_evt_queue, &gpio_num, portMAX_DELAY)) {
-                        printf("Button pressed on GPIO %d\n", gpio_num);
+                        printf("Button pressed on GPIO %"PRIu32"\n", gpio_num);
                         if (gpio_num == GPIO_SWITCH_INPUT_PIN_0) {
                                 gpio_set_level(GPIO_LED_OUTPUT_PIN_0, !gpio_get_level(GPIO_LED_OUTPUT_PIN_0));
                         } else if (gpio_num == GPIO_SWITCH_INPUT_PIN_1) {
