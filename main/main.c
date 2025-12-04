@@ -4,10 +4,13 @@
 #include <inttypes.h>
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
+#include "freertos/projdefs.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "driver/gpio.h"
 #include "hal/gpio_types.h"
+#include "portmacro.h"
 #include "xtensa/config/system.h"
 
 /**
@@ -49,6 +52,7 @@
  */
 
 #define ESP_INTR_FLAG_DEFAULT 0
+#define DEBOUNCE_DELAY_MS 50
 
 /*
  * Fancy FIFO void * abstraction with methods attached to it. Safer than using a raw array (and recommended).
@@ -57,6 +61,9 @@
  * To dequeue, use xQueueReceive()
  */
 static QueueHandle_t gpio_button_evt_queue = NULL;
+
+static TimerHandle_t debounce_timer_0 = NULL;
+static TimerHandle_t debounce_timer_1 = NULL;
 
 /*
  * Interrupt Service Routine (isr) for GPIO button.
@@ -79,7 +86,20 @@ static QueueHandle_t gpio_button_evt_queue = NULL;
 static void IRAM_ATTR gpio_button_isr_handler(void *args)
 {
         uint32_t gpio_num = (uint32_t) args;
-        xQueueSendFromISR(gpio_button_evt_queue, &gpio_num, NULL);
+        if (gpio_num == GPIO_SWITCH_INPUT_PIN_0) {
+                xTimerStartFromISR(debounce_timer_0, NULL);
+        } else if (gpio_num == GPIO_SWITCH_INPUT_PIN_1) {
+                xTimerStartFromISR(debounce_timer_1, NULL);
+        }
+}
+
+static void debounce_timer_callback(TimerHandle_t xTimer)
+{
+        uint32_t gpio_num = (uint32_t) pvTimerGetTimerID(xTimer);
+
+        if (gpio_get_level(gpio_num) == 0) {
+                xQueueSend(gpio_button_evt_queue, &gpio_num, portMAX_DELAY);
+        }
 }
 
 /*
@@ -92,15 +112,18 @@ static void IRAM_ATTR gpio_button_isr_handler(void *args)
 static void gpio_button_task(void *args)
 {
         uint32_t gpio_num;
+        uint32_t led_state_0 = 0;
+        uint32_t led_state_1 = 0;
 
         while (1) {
                 if (xQueueReceive(gpio_button_evt_queue, &gpio_num, portMAX_DELAY)) {
+                        uint32_t *led_state = (gpio_num == GPIO_SWITCH_INPUT_PIN_0) ? &led_state_0 : &led_state_1;
+                        *led_state = !*led_state;
+
+                        uint32_t led_pin = (gpio_num == GPIO_SWITCH_INPUT_PIN_0) ? GPIO_LED_OUTPUT_PIN_0 : GPIO_LED_OUTPUT_PIN_1;
+                        gpio_set_level(led_pin, *led_state);
+
                         printf("Button pressed on GPIO %"PRIu32"\n", gpio_num);
-                        if (gpio_num == GPIO_SWITCH_INPUT_PIN_0) {
-                                gpio_set_level(GPIO_LED_OUTPUT_PIN_0, !gpio_get_level(GPIO_LED_OUTPUT_PIN_0));
-                        } else if (gpio_num == GPIO_SWITCH_INPUT_PIN_1) {
-                                gpio_set_level(GPIO_LED_OUTPUT_PIN_1, !gpio_get_level(GPIO_LED_OUTPUT_PIN_1));
-                        }
                 }
         }
 }
@@ -123,9 +146,6 @@ void app_main(void)
         io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
         gpio_config(&io_conf);
 
-        // Set ANYEDGE interrupt type for INPUT 0
-        gpio_set_intr_type(GPIO_SWITCH_INPUT_PIN_0, GPIO_INTR_ANYEDGE);
-
         // Create queue for button events
         gpio_button_evt_queue = xQueueCreate(10, sizeof(uint32_t));
 
@@ -140,6 +160,10 @@ void app_main(void)
          * - uxPriority: Priority of the task (UBaseType_t aka unsigned int)
          * - pxCreatedTask: Pointer to a variable to store the created task handle (TaskHandle_t * const)
          */
+
+        debounce_timer_0 = xTimerCreate("debounce_timer_0", pdMS_TO_TICKS(DEBOUNCE_DELAY_MS), pdFALSE, (void *) GPIO_SWITCH_INPUT_PIN_0, debounce_timer_callback);
+        debounce_timer_1 = xTimerCreate("debounce_timer_1", pdMS_TO_TICKS(DEBOUNCE_DELAY_MS), pdFALSE, (void *) GPIO_SWITCH_INPUT_PIN_1, debounce_timer_callback);
+
         xTaskCreate(gpio_button_task, "gpio_button_task", 2048, NULL, 10, NULL);
 
         /*
