@@ -114,6 +114,18 @@ static void send_hid_report(void)
         send_string(message);
 }
 
+static void hid_send_on_app_button(void)
+{
+        if (tud_mounted()) {
+                static bool send_hid_data = true;
+                if (send_hid_data) {
+                        send_hid_report();
+                }
+                send_hid_data = !gpio_get_level(APP_BUTTON);
+        }
+	vTaskDelay(pdMS_TO_TICKS(100));
+}
+
 void app_main(void)
 {
         const gpio_config_t boot_button_config = {
@@ -139,13 +151,6 @@ void app_main(void)
         ESP_LOGI(TAG, "USB initialization DONE");
 
         while (1) {
-                if (tud_mounted()) {
-                        static bool send_hid_data = true;
-                        if (send_hid_data) {
-                                send_hid_report();
-                        }
-                        send_hid_data = !gpio_get_level(APP_BUTTON);
-                }
-                vTaskDelay(pdMS_TO_TICKS(100));
+		hid_send_on_app_button();
         }
 }
