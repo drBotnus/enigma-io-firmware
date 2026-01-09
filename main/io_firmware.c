@@ -21,7 +21,7 @@ struct keycode_mapping {
 	int keycode;
 };
 
-struct keycode_mapping conv_table[] = {HID_ASCII_TO_KEYCODE};
+struct keycode_mapping conv_table[] = { HID_ASCII_TO_KEYCODE };
 
 const uint8_t hid_report_descriptor[] = { TUD_HID_REPORT_DESC_KEYBOARD(
 	HID_REPORT_ID(HID_ITF_PROTOCOL_KEYBOARD)) };
@@ -68,7 +68,8 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
 {
 }
 
-uint8_t char_to_hid_keycode(unsigned char c, uint8_t *modifier) {
+uint8_t char_to_hid_keycode(unsigned char c, uint8_t *modifier)
+{
 	uint8_t mod = 0;
 	uint8_t keycode = 0;
 	if (c < sizeof(conv_table) / sizeof(conv_table[0])) {
@@ -85,20 +86,21 @@ uint8_t char_to_hid_keycode(unsigned char c, uint8_t *modifier) {
 	return keycode;
 }
 
-void send_string(const char *str) 
+void send_string(const char *str)
 {
 	ESP_LOGI(TAG, "Sending Keyboard report for string: %s", str);
-	uint8_t keycodes[6] = {0};
+	uint8_t keycodes[6] = { 0 };
 	uint8_t modifier = 0;
 
 	for (size_t i = 0; str[i] != '\0' && i < strlen(str); i++) {
 		keycodes[0] = char_to_hid_keycode(str[i], &modifier);
 
-
 		if (keycodes[0] != 0) {
-			tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, modifier, keycodes);
+			tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD,
+						modifier, keycodes);
 			vTaskDelay(pdMS_TO_TICKS(10));
-			tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, NULL);
+			tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0,
+						NULL);
 			vTaskDelay(pdMS_TO_TICKS(10));
 		} else {
 			ESP_LOGW(TAG, "Invalid character: %c", str[i]);
@@ -108,7 +110,7 @@ void send_string(const char *str)
 
 static void send_hid_report(void)
 {
-	const char* message = "Hello World ESP32";
+	const char *message = "Hello World ESP32";
 	send_string(message);
 }
 
@@ -130,7 +132,8 @@ void app_main(void)
 	tusb_cfg.descriptor.device = NULL;
 	tusb_cfg.descriptor.full_speed_config = hid_configuration_descriptor;
 	tusb_cfg.descriptor.string = hid_string_descriptor;
-	tusb_cfg.descriptor.string_count = sizeof(hid_string_descriptor) / sizeof(hid_string_descriptor[0]);
+	tusb_cfg.descriptor.string_count = sizeof(hid_string_descriptor) /
+					   sizeof(hid_string_descriptor[0]);
 
 	ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
 	ESP_LOGI(TAG, "USB initialization DONE");
