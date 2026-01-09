@@ -11,6 +11,8 @@
 #include "driver/gpio.h"
 
 #define APP_BUTTON (GPIO_NUM_0)
+#define ROW_BUTTON (GPIO_NUM_11)
+#define COL_BUTTON (GPIO_NUM_10)
 static const char *TAG = "enigma i/o";
 
 #define TUSB_DESC_TOTAL_LEN \
@@ -108,10 +110,36 @@ void send_string(const char *str)
         }
 }
 
-static void send_hid_report(void)
+static void send_hid_report(char c)
 {
-        const char *message = "Hello World ESP32";
-        send_string(message);
+	char str[2];
+	str[0] = c;
+	str[1] = '\0';
+        send_string(str);
+}
+
+struct matrix {
+        bool row;
+        bool col;
+};
+
+static char gpio_get_char()
+{
+        struct matrix input;
+        input.row = !gpio_get_level(ROW_BUTTON);
+        input.col = !gpio_get_level(COL_BUTTON);
+
+	if (!input.row && !input.col) {
+		return 'H';
+	} else if (input.row && !input.col) {
+		return 'e';
+	} else if (!input.row && input.col) {
+		return 'i';
+	} else if (input.row && input.col) {
+		return '!';
+	}
+
+	return '?';
 }
 
 static void hid_send_on_app_button(void)
@@ -119,15 +147,29 @@ static void hid_send_on_app_button(void)
         if (tud_mounted()) {
                 static bool send_hid_data = true;
                 if (send_hid_data) {
-                        send_hid_report();
+                        send_hid_report(gpio_get_char());
                 }
                 send_hid_data = !gpio_get_level(APP_BUTTON);
         }
-	vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 void app_main(void)
 {
+        const gpio_config_t row_button_config = {
+                .pin_bit_mask = BIT64(ROW_BUTTON),
+                .mode = GPIO_MODE_INPUT,
+                .intr_type = GPIO_INTR_DISABLE,
+                .pull_up_en = GPIO_PULLUP_ENABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        };
+        const gpio_config_t col_button_config = {
+                .pin_bit_mask = BIT64(COL_BUTTON),
+                .mode = GPIO_MODE_INPUT,
+                .intr_type = GPIO_INTR_DISABLE,
+                .pull_up_en = GPIO_PULLUP_ENABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        };
         const gpio_config_t boot_button_config = {
                 .pin_bit_mask = BIT64(APP_BUTTON),
                 .mode = GPIO_MODE_INPUT,
@@ -135,6 +177,8 @@ void app_main(void)
                 .pull_up_en = GPIO_PULLUP_ENABLE,
                 .pull_down_en = GPIO_PULLDOWN_DISABLE,
         };
+        ESP_ERROR_CHECK(gpio_config(&row_button_config));
+        ESP_ERROR_CHECK(gpio_config(&col_button_config));
         ESP_ERROR_CHECK(gpio_config(&boot_button_config));
 
         ESP_LOGI(TAG, "USB initialization");
@@ -151,6 +195,6 @@ void app_main(void)
         ESP_LOGI(TAG, "USB initialization DONE");
 
         while (1) {
-		hid_send_on_app_button();
+                hid_send_on_app_button();
         }
 }
