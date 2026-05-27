@@ -142,13 +142,15 @@ esp_err_t enigma_matrix_event_handler(matrix_kbd_handle_t mkbd_handle,
                                       matrix_kbd_event_id_t event,
                                       void *event_data, void *handler_args)
 {
-        ESP_LOGI(TAG, "Enigma matrix event");
+        ESP_LOGD(TAG, "Enigma matrix event");
         matrix_kbd_event_data_t *data = event_data;
 
-        ESP_LOGI(TAG,
-         "row=%" PRIu32 " col=%" PRIu32,
+        ESP_LOGD(TAG,
+         "row=%" PRIx32 " col=%" PRIx32,
          data->row,
          data->col);
+
+        ESP_LOGD(TAG, "keycode=%" PRIx32, MAKE_KEY_CODE(data->row, data->col));
 
         switch (event) {
         case MATRIX_KBD_EVENT_DOWN:
