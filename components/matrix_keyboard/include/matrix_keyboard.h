@@ -24,6 +24,11 @@ typedef struct {
         uint32_t debounce_ms;
 } matrix_kbd_config_t;
 
+typedef struct {
+        uint32_t row;
+        uint32_t col;
+} matrix_kbd_event_data_t ;
+
 #define MATRIX_KEYBOARD_DEFAULT_CONFIG() \
 {                                        \
         .rows = NULL,                    \

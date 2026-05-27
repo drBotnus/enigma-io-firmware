@@ -10,10 +10,11 @@ static const char *TAG = "matrix_kbd";
 
 typedef struct matrix_kbd_t matrix_kbd_t;
 
-struct matrix_kbd_event_data_t {
+typedef struct {
         uint32_t row;
         uint32_t col;
-};
+        bool valid;
+} matrix_position_t;
 
 struct matrix_kbd_t {
         // Row Group
@@ -23,126 +24,69 @@ struct matrix_kbd_t {
         uint32_t nrows;
         uint32_t ncols;
 
-        // Debounce Timer
-        TimerHandle_t timer;
+        // Task Handle to avoid duplicate tasks by multiple calls to start fn.
+        TaskHandle_t scan_task;
         // Handler function provided by initializer (in function pointer)
         matrix_kbd_event_handler event_handler;
         // Additional arguments to pass to matrix_kbd_t.event_handler
         void *event_handler_args;
 
-        uint32_t pending_row_state;
-        uint32_t pending_col_state;
-        uint32_t stable_row_state;
-        uint32_t stable_col_state;
+        matrix_position_t stable;
+        matrix_position_t pending;
 
-        bool running;
+        TickType_t pending_since;
+        TickType_t debounce_ticks;
 };
 
-static uint32_t read_gpio_group(const gpio_num_t *gpios, const uint32_t count)
+static bool position_equal(matrix_position_t a, matrix_position_t b)
 {
-        uint32_t state = 0;
+        return a.valid == b.valid && a.row == b.row && a.col == b.col;
+}
+
+static int detect_active_line(const gpio_num_t *gpios, uint32_t count)
+{
+        int active = -1;
 
         for (uint32_t i = 0; i < count; i++) {
-                if (gpio_get_level(gpios[i])) {
-                        state |= (1U << i);
-                }
-        }
-
-        return state;
-}
-
-static void debounce_timer_cb(TimerHandle_t xTimer)
-{
-        matrix_kbd_t *mkbd = (matrix_kbd_t *)pvTimerGetTimerID(xTimer);
-
-        if (!mkbd) {
-                return;
-        }
-
-        const uint32_t row_state = read_gpio_group(mkbd->rows, mkbd->nrows);
-
-        const uint32_t col_state = read_gpio_group(mkbd->cols, mkbd->ncols);
-
-        if (row_state != mkbd->pending_row_state ||
-            col_state != mkbd->pending_col_state) {
-                return;
-        }
-
-        const uint32_t changed_rows = row_state ^ mkbd->stable_row_state;
-        const uint32_t changed_cols = col_state ^ mkbd->stable_col_state;
-
-        if (!changed_rows && !changed_cols) {
-                return;
-        }
-
-        for (uint32_t r = 0; r < mkbd->nrows; r++) {
-                if (!(changed_rows & (1U << r))) {
-                        continue;
-                }
-
-                for (uint32_t c = 0; c < mkbd->ncols; c++) {
-                        if (!(changed_cols & (1U << c))) {
-                                continue;
+                // ACTIVE LOW
+                if (!gpio_get_level(gpios[i])) {
+                        if (active != -1) {
+                                return -2;
                         }
 
-                        bool pressed = (row_state & (1U << r)) &&
-                                       (col_state & (1U << c));
-
-                        struct matrix_kbd_event_data_t event_data = {
-                                .row = r,
-                                .col = c,
-                        };
-
-                        const matrix_kbd_event_id_t event =
-                                pressed ? MATRIX_KBD_EVENT_DOWN :
-                                          MATRIX_KBD_EVENT_UP;
-
-                        ESP_LOGD(TAG,
-                                 "row_state=0x%08" PRIx32
-                                 " col_state=0x%08" PRIx32,
-                                 row_state, col_state);
-                        ESP_LOGD(TAG,
-                                 "changed_row_state=0x%08" PRIx32
-                                 " changed_col_state=0x%08" PRIx32,
-                                 changed_rows, changed_cols);
-
-                        if (mkbd->event_handler) {
-                                mkbd->event_handler(mkbd, event, &event_data,
-                                                    mkbd->event_handler_args);
-                        }
+                        active = (int)i;
                 }
         }
 
-        // Commit stable state only after debounce success
-        mkbd->stable_row_state = row_state;
-        mkbd->stable_col_state = col_state;
+        return active;
 }
 
-esp_err_t matrix_kbd_trigger_debounce(matrix_kbd_handle_t mkbd_handle)
+static matrix_position_t read_position(const matrix_kbd_t *mkbd)
 {
-        if (!mkbd_handle) {
-                return ESP_ERR_INVALID_ARG;
+        matrix_position_t pos = {
+                .row = -1,
+                .col = -1,
+                .valid = false,
+        };
+
+        int row = detect_active_line(mkbd->rows, mkbd->nrows);
+        int col = detect_active_line(mkbd->cols, mkbd->ncols);
+
+        if (row < 0 || col < 0) {
+                return pos;
         }
 
-        matrix_kbd_t *mkbd = mkbd_handle;
+        pos.row = row;
+        pos.col = col;
+        pos.valid = true;
 
-        mkbd->pending_row_state = read_gpio_group(mkbd->rows, mkbd->nrows);
-        mkbd->pending_col_state = read_gpio_group(mkbd->cols, mkbd->ncols);
-
-        const BaseType_t ok = xTimerReset(mkbd->timer, 0);
-
-        return ok == pdPASS ? ESP_OK : ESP_FAIL;
+        return pos;
 }
 
 esp_err_t matrix_kbd_init(const matrix_kbd_config_t *config,
                           matrix_kbd_handle_t *mkbd_handle)
 {
         if (!config || !mkbd_handle) {
-                return ESP_ERR_INVALID_ARG;
-        }
-
-        if (!config->rows || !config->cols || !config->nrows ||
-            !config->ncols) {
                 return ESP_ERR_INVALID_ARG;
         }
 
@@ -165,24 +109,16 @@ esp_err_t matrix_kbd_init(const matrix_kbd_config_t *config,
                 return ESP_ERR_NO_MEM;
         }
 
-        for (uint32_t i = 0; i < config->nrows; i++) {
-                mkbd->rows[i] = config->rows[i];
-        }
+        memcpy(mkbd->rows, config->rows, sizeof(gpio_num_t) * config->nrows);
 
-        for (uint32_t i = 0; i < config->ncols; i++) {
-                mkbd->cols[i] = config->cols[i];
-        }
+        memcpy(mkbd->cols, config->cols, sizeof(gpio_num_t) * config->ncols);
 
         for (uint32_t i = 0; i < config->nrows; i++) {
                 gpio_config_t io_conf = {
-                        .pin_bit_mask = (1ULL << config->rows[i]),
-
+                        .pin_bit_mask = (1ULL << mkbd->rows[i]),
                         .mode = GPIO_MODE_INPUT,
-
                         .pull_up_en = GPIO_PULLUP_ENABLE,
-
                         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-
                         .intr_type = GPIO_INTR_DISABLE,
                 };
 
@@ -191,45 +127,24 @@ esp_err_t matrix_kbd_init(const matrix_kbd_config_t *config,
 
         for (uint32_t i = 0; i < config->ncols; i++) {
                 gpio_config_t io_conf = {
-                        .pin_bit_mask = (1ULL << config->cols[i]),
-
+                        .pin_bit_mask = (1ULL << mkbd->cols[i]),
                         .mode = GPIO_MODE_INPUT,
-
                         .pull_up_en = GPIO_PULLUP_ENABLE,
-
                         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-
                         .intr_type = GPIO_INTR_DISABLE,
                 };
 
                 ESP_ERROR_CHECK(gpio_config(&io_conf));
         }
 
-        mkbd->running = false;
+        mkbd->debounce_ticks = pdMS_TO_TICKS(config->debounce_ms) == 0 ? 1 : pdMS_TO_TICKS(config->debounce_ms);
 
-        mkbd->timer = xTimerCreate("matrix_db",
-                                   pdMS_TO_TICKS(config->debounce_ms), pdFALSE,
-                                   mkbd, debounce_timer_cb);
-
-        if (!mkbd->timer) {
-                free(mkbd->rows);
-                free(mkbd->cols);
-                free(mkbd);
-                return ESP_ERR_NO_MEM;
-        }
-
-        // Initialize stable state
-        mkbd->stable_row_state = read_gpio_group(mkbd->rows, mkbd->nrows);
-
-        mkbd->stable_col_state = read_gpio_group(mkbd->cols, mkbd->ncols);
-
-        mkbd->pending_row_state = mkbd->stable_row_state;
-
-        mkbd->pending_col_state = mkbd->stable_col_state;
+        mkbd->stable = read_position(mkbd);
+        mkbd->pending = mkbd->stable;
 
         *mkbd_handle = mkbd;
 
-        ESP_LOGI(TAG, "initialized matrix detector (%" PRIu32 "x%" PRIu32 ")",
+        ESP_LOGI(TAG, "initialized detector (%" PRIu32 "x%" PRIu32 ")",
                  mkbd->nrows, mkbd->ncols);
 
         return ESP_OK;
@@ -243,64 +158,94 @@ esp_err_t matrix_kbd_deinit(matrix_kbd_handle_t mkbd_handle)
 
         matrix_kbd_t *mkbd = mkbd_handle;
 
-        mkbd->running = false;
-
-        if (mkbd->timer) {
-                xTimerStop(mkbd->timer, portMAX_DELAY);
-                xTimerDelete(mkbd->timer, portMAX_DELAY);
-        }
+        matrix_kbd_stop(mkbd);
 
         free(mkbd->rows);
         free(mkbd->cols);
-
         free(mkbd);
 
         return ESP_OK;
 }
 
+void matrix_kbd_scan_task(void *pvParameters)
+{
+        ESP_LOGD("mkbd_scan", "Entered scan task");
+        matrix_kbd_t *mkbd = pvParameters;
+
+        while (true) {
+                matrix_position_t current = read_position(mkbd);
+                TickType_t now = xTaskGetTickCount();
+
+                if (!position_equal(current, mkbd->pending)) {
+                        mkbd->pending = current;
+                        mkbd->pending_since = now;
+
+                        ESP_LOGD(TAG, "Edge detected");
+
+                }
+
+                if (!position_equal(mkbd->pending, mkbd->stable)) {
+                        TickType_t elapsed = now - mkbd->pending_since;
+
+                        if (elapsed >= mkbd->debounce_ticks) {
+                                bool was_valid = mkbd->stable.valid;
+                                bool now_valid = mkbd->pending.valid;
+
+                                matrix_kbd_event_id_t event;
+
+                                if (!was_valid && now_valid) {
+                                        event = MATRIX_KBD_EVENT_DOWN;
+                                } else if (was_valid && !now_valid) {
+                                        event = MATRIX_KBD_EVENT_UP;
+                                } else {
+                                        event = MATRIX_KBD_EVENT_DOWN;
+                                }
+
+                                matrix_position_t old = mkbd->stable;
+
+                                mkbd->stable = mkbd->pending;
+
+                                if (mkbd->event_handler) {
+
+                                        matrix_kbd_event_data_t event_data = {
+                                                .row = (uint32_t)(
+                                                    old.valid ? old.row : mkbd->stable.row),
+
+                                                .col = (uint32_t)(
+                                                    old.valid ? old.col : mkbd->stable.col),
+                                            };
+
+                                        mkbd->event_handler(
+                                            mkbd,
+                                            event,
+                                            &event_data,
+                                            mkbd->event_handler_args);
+                                }
+                        }
+                }
+
+                vTaskDelay(1);
+        }
+}
+
 esp_err_t matrix_kbd_start(matrix_kbd_handle_t mkbd_handle)
 {
+        ESP_LOGD("mkbd_scan", "Entered start task");
         if (!mkbd_handle) {
                 return ESP_ERR_INVALID_ARG;
         }
 
         matrix_kbd_t *mkbd = mkbd_handle;
 
-        mkbd->running = true;
-
-        // Take initial snapshot so first edge isn't noisy
-        mkbd->stable_row_state = read_gpio_group(mkbd->rows, mkbd->nrows);
-
-        mkbd->stable_col_state = read_gpio_group(mkbd->cols, mkbd->ncols);
-
-        mkbd->pending_row_state = mkbd->stable_row_state;
-        mkbd->pending_col_state = mkbd->stable_col_state;
-
-        while (mkbd->running) {
-                const uint32_t current_rows =
-                        read_gpio_group(mkbd->rows, mkbd->nrows);
-                const uint32_t current_cols =
-                        read_gpio_group(mkbd->cols, mkbd->ncols);
-
-                if (current_rows != mkbd->stable_row_state ||
-                    current_cols != mkbd->stable_col_state) {
-                        mkbd->pending_row_state = current_rows;
-                        mkbd->pending_col_state = current_cols;
-                        xTimerStart(mkbd->timer, portMAX_DELAY);
-                }
-
-                if (current_rows != mkbd->stable_row_state) {
-                        mkbd->pending_row_state = current_rows;
-                        xTimerStart(mkbd->timer, portMAX_DELAY);
-                }
-
-                if (current_cols != mkbd->stable_col_state) {
-                        mkbd->pending_col_state = current_cols;
-                        xTimerStart(mkbd->timer, portMAX_DELAY);
-                }
+        if (mkbd->scan_task) {
+                return ESP_OK;
         }
 
-        return ESP_OK;
+        BaseType_t ok = xTaskCreatePinnedToCore(matrix_kbd_scan_task,
+                                                "matrix_scan", 4096, mkbd, 5,
+                                                &mkbd->scan_task, 0);
+
+        return ok == pdPASS ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t matrix_kbd_stop(matrix_kbd_handle_t mkbd_handle)
@@ -311,10 +256,9 @@ esp_err_t matrix_kbd_stop(matrix_kbd_handle_t mkbd_handle)
 
         matrix_kbd_t *mkbd = mkbd_handle;
 
-        mkbd->running = false;
-
-        if (mkbd->timer) {
-                xTimerStop(mkbd->timer, portMAX_DELAY);
+        if (mkbd->scan_task) {
+                vTaskDelete(mkbd->scan_task);
+                mkbd->scan_task = NULL;
         }
 
         return ESP_OK;
@@ -324,6 +268,8 @@ esp_err_t matrix_kbd_register_event_handler(matrix_kbd_handle_t mkbd_handle,
                                             matrix_kbd_event_handler handler,
                                             void *handler_args)
 {
+        ESP_LOGD("matrix_kbd_register_event_handler", "Entered");
+
         if (!mkbd_handle) {
                 return ESP_ERR_INVALID_ARG;
         }

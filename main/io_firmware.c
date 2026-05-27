@@ -138,41 +138,24 @@ static void send_hid_report(char c)
         send_key_with_modifier(c, &modifier);
 }
 
-struct matrix {
-        bool row;
-        bool col;
-};
-
-static char gpio_get_char()
-{
-        struct matrix input;
-        input.row = !gpio_get_level(ROW_BUTTON);
-        input.col = !gpio_get_level(COL_BUTTON);
-
-        if (!input.row && !input.col) {
-                return 'H';
-        } else if (input.row && !input.col) {
-                return 'e';
-        } else if (!input.row && input.col) {
-                return 'i';
-        } else if (input.row && input.col) {
-                return '!';
-        }
-
-        return '?';
-}
-
 esp_err_t enigma_matrix_event_handler(matrix_kbd_handle_t mkbd_handle,
                                       matrix_kbd_event_id_t event,
                                       void *event_data, void *handler_args)
 {
-        uint32_t keycode = (uint32_t)event_data;
+        ESP_LOGI(TAG, "Enigma matrix event");
+        matrix_kbd_event_data_t *data = event_data;
+
+        ESP_LOGI(TAG,
+         "row=%" PRIu32 " col=%" PRIu32,
+         data->row,
+         data->col);
+
         switch (event) {
         case MATRIX_KBD_EVENT_DOWN:
-                ESP_LOGI(TAG, "press event, keycode = %04" PRIx32, keycode);
+                ESP_LOGI(TAG, "press event");
                 break;
         case MATRIX_KBD_EVENT_UP:
-                ESP_LOGI(TAG, "release event, keycode = %04" PRIx32, keycode);
+                ESP_LOGI(TAG, "release event");
                 break;
         }
 
