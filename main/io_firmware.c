@@ -1,7 +1,7 @@
 #include "class/hid/hid.h"
 #include "device/usbd.h"
 #include "matrix_keyboard.h"
-#include "projdefs.h"
+#include "hid_keyboard.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include "esp_log.h"
@@ -20,15 +20,41 @@ static const char *TAG = "enigma i/o";
 #define TUSB_DESC_TOTAL_LEN \
         (TUD_CONFIG_DESC_LEN + CFG_TUD_HID * TUD_HID_DESC_LEN)
 
-struct keycode_mapping {
+typedef struct {
         int modifier;
         int keycode;
-};
+} keycode_mapping_t;
 
-struct keycode_mapping conv_table[] = { HID_ASCII_TO_KEYCODE };
+typedef struct {
+        uint16_t keycode;
+        uint8_t hid_code;
+} keymap_t;
+
+keycode_mapping_t conv_table[] = { HID_ASCII_TO_KEYCODE };
 
 const uint8_t hid_report_descriptor[] = { TUD_HID_REPORT_DESC_KEYBOARD(
         HID_REPORT_ID(HID_ITF_PROTOCOL_KEYBOARD)) };
+
+static const keymap_t keymap[] = {
+        { MAKE_KEY_CODE(0, 0), HID_KEY_A }, { MAKE_KEY_CODE(0, 1), HID_KEY_B },
+        { MAKE_KEY_CODE(0, 2), HID_KEY_C }, { MAKE_KEY_CODE(0, 3), HID_KEY_D },
+        { MAKE_KEY_CODE(1, 0), HID_KEY_E }, { MAKE_KEY_CODE(1, 1), HID_KEY_F },
+        { MAKE_KEY_CODE(1, 2), HID_KEY_G }, { MAKE_KEY_CODE(1, 3), HID_KEY_H },
+        { MAKE_KEY_CODE(2, 0), HID_KEY_I }, { MAKE_KEY_CODE(2, 1), HID_KEY_J },
+        { MAKE_KEY_CODE(2, 2), HID_KEY_K }, { MAKE_KEY_CODE(2, 3), HID_KEY_L },
+        { MAKE_KEY_CODE(3, 0), HID_KEY_M }, { MAKE_KEY_CODE(3, 1), HID_KEY_N },
+        { MAKE_KEY_CODE(3, 2), HID_KEY_O }, { MAKE_KEY_CODE(3, 3), HID_KEY_P },
+};
+
+uint8_t lookup_hid(uint16_t keycode)
+{
+        for (int i = 0; i < 16; i++) {
+                if (keymap[i].keycode == keycode) {
+                        return keymap[i].hid_code;
+                }
+        }
+        return 0;
+}
 
 const char *hid_string_descriptor[5] = {
         (char[]){ 0x09, 0x04 }, // supported language is english
@@ -145,12 +171,13 @@ esp_err_t enigma_matrix_event_handler(matrix_kbd_handle_t mkbd_handle,
         ESP_LOGD(TAG, "Enigma matrix event");
         matrix_kbd_event_data_t *data = event_data;
 
-        ESP_LOGD(TAG,
-         "row=%" PRIx32 " col=%" PRIx32,
-         data->row,
-         data->col);
+        ESP_LOGD(TAG, "row=%" PRIx32 " col=%" PRIx32, data->row, data->col);
 
-        ESP_LOGD(TAG, "keycode=%" PRIx32, MAKE_KEY_CODE(data->row, data->col));
+        uint16_t keycode = MAKE_KEY_CODE(data->row, data->col);
+        uint8_t hid_code = lookup_hid(keycode);
+        ESP_LOGD(TAG, "keycode=%" PRIu16 ", hid_code=%" PRIu8, keycode, hid_code);
+
+        send_key(hid_code);
 
         switch (event) {
         case MATRIX_KBD_EVENT_DOWN:
@@ -168,21 +195,18 @@ void app_main(void)
 {
         matrix_kbd_handle_t kbd;
 
-	matrix_kbd_config_t config = MATRIX_KEYBOARD_DEFAULT_CONFIG();
-	config.cols = (int[]) {
-		10, 11, 12, 13
-	};
-	config.ncols = 4;
-	config.rows = (int[]) {
-		15, 16, 17, 18
-	};
-	config.nrows = 4;
-	
-	matrix_kbd_init(&config, &kbd);
+        matrix_kbd_config_t config = MATRIX_KEYBOARD_DEFAULT_CONFIG();
+        config.cols = (int[]){ 10, 11, 12, 13 };
+        config.ncols = 4;
+        config.rows = (int[]){ 15, 16, 17, 18 };
+        config.nrows = 4;
 
-	matrix_kbd_register_event_handler(kbd, enigma_matrix_event_handler, NULL);
+        matrix_kbd_init(&config, &kbd);
 
-	matrix_kbd_start(kbd);
+        matrix_kbd_register_event_handler(kbd, enigma_matrix_event_handler,
+                                          NULL);
+
+        matrix_kbd_start(kbd);
 
         ESP_LOGI(TAG, "USB initialization");
 
