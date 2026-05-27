@@ -1,6 +1,8 @@
 #include "class/hid/hid.h"
 #include "device/usbd.h"
+#include "matrix_keyboard.h"
 #include "projdefs.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -110,12 +112,30 @@ void send_string(const char *str)
         }
 }
 
+void send_key(uint8_t keycode)
+{
+        ESP_LOGI(TAG, "Sending Keyboard report for keycode: 0x%02X", keycode);
+        uint8_t keycodes[6] = { keycode };
+        tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, keycodes);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, 0, NULL);
+        vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+void send_key_with_modifier(unsigned char keycode, uint8_t *modifier)
+{
+        ESP_LOGI(TAG, "Sending Keyboard report for keycode: 0x%02X", keycode);
+        uint8_t keycodes[6] = { char_to_hid_keycode(keycode, modifier) };
+        tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, *modifier, keycodes);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        tud_hid_keyboard_report(HID_ITF_PROTOCOL_KEYBOARD, *modifier, NULL);
+        vTaskDelay(pdMS_TO_TICKS(10));
+}
+
 static void send_hid_report(char c)
 {
-	char str[2];
-	str[0] = c;
-	str[1] = '\0';
-        send_string(str);
+        uint8_t modifier = 0;
+        send_key_with_modifier(c, &modifier);
 }
 
 struct matrix {
@@ -129,57 +149,55 @@ static char gpio_get_char()
         input.row = !gpio_get_level(ROW_BUTTON);
         input.col = !gpio_get_level(COL_BUTTON);
 
-	if (!input.row && !input.col) {
-		return 'H';
-	} else if (input.row && !input.col) {
-		return 'e';
-	} else if (!input.row && input.col) {
-		return 'i';
-	} else if (input.row && input.col) {
-		return '!';
-	}
+        if (!input.row && !input.col) {
+                return 'H';
+        } else if (input.row && !input.col) {
+                return 'e';
+        } else if (!input.row && input.col) {
+                return 'i';
+        } else if (input.row && input.col) {
+                return '!';
+        }
 
-	return '?';
+        return '?';
 }
 
-static void hid_send_on_app_button(void)
+esp_err_t enigma_matrix_event_handler(matrix_kbd_handle_t mkbd_handle,
+                                      matrix_kbd_event_id_t event,
+                                      void *event_data, void *handler_args)
 {
-        if (tud_mounted()) {
-                static bool send_hid_data = true;
-                if (send_hid_data) {
-                        send_hid_report(gpio_get_char());
-                }
-                send_hid_data = !gpio_get_level(APP_BUTTON);
+        uint32_t keycode = (uint32_t)event_data;
+        switch (event) {
+        case MATRIX_KBD_EVENT_DOWN:
+                ESP_LOGI(TAG, "press event, keycode = %04" PRIx32, keycode);
+                break;
+        case MATRIX_KBD_EVENT_UP:
+                ESP_LOGI(TAG, "release event, keycode = %04" PRIx32, keycode);
+                break;
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
+
+        return ESP_OK;
 }
 
 void app_main(void)
 {
-        const gpio_config_t row_button_config = {
-                .pin_bit_mask = BIT64(ROW_BUTTON),
-                .mode = GPIO_MODE_INPUT,
-                .intr_type = GPIO_INTR_DISABLE,
-                .pull_up_en = GPIO_PULLUP_ENABLE,
-                .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        };
-        const gpio_config_t col_button_config = {
-                .pin_bit_mask = BIT64(COL_BUTTON),
-                .mode = GPIO_MODE_INPUT,
-                .intr_type = GPIO_INTR_DISABLE,
-                .pull_up_en = GPIO_PULLUP_ENABLE,
-                .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        };
-        const gpio_config_t boot_button_config = {
-                .pin_bit_mask = BIT64(APP_BUTTON),
-                .mode = GPIO_MODE_INPUT,
-                .intr_type = GPIO_INTR_DISABLE,
-                .pull_up_en = GPIO_PULLUP_ENABLE,
-                .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        };
-        ESP_ERROR_CHECK(gpio_config(&row_button_config));
-        ESP_ERROR_CHECK(gpio_config(&col_button_config));
-        ESP_ERROR_CHECK(gpio_config(&boot_button_config));
+        matrix_kbd_handle_t kbd;
+
+	matrix_kbd_config_t config = MATRIX_KEYBOARD_DEFAULT_CONFIG();
+	config.cols = (int[]) {
+		10, 11, 12, 13
+	};
+	config.ncols = 4;
+	config.rows = (int[]) {
+		15, 16, 17, 18
+	};
+	config.nrows = 4;
+	
+	matrix_kbd_init(&config, &kbd);
+
+	matrix_kbd_register_event_handler(kbd, enigma_matrix_event_handler, NULL);
+
+	matrix_kbd_start(kbd);
 
         ESP_LOGI(TAG, "USB initialization");
 
@@ -193,8 +211,4 @@ void app_main(void)
 
         ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
         ESP_LOGI(TAG, "USB initialization DONE");
-
-        while (1) {
-                hid_send_on_app_button();
-        }
 }
