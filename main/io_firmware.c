@@ -5,8 +5,6 @@
 // FreeRTOS + ESP-IDF
 #include "esp_log.h"
 #include "tinyusb.h"
-#include "class/hid/hid.h"
-#include "class/hid/hid_device.h"
 #include "device/usbd.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"

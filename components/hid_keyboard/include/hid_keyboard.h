@@ -3,7 +3,6 @@
 
 #include <esp_err.h>
 #include <stdint.h>
-#include <class/hid/hid.h>
 
 #define MAKE_KEY_CODE(row, col) ((row << 8) | (col))
 #define GET_KEY_CODE_ROW(code) ((code >> 8) & 0xFF)
